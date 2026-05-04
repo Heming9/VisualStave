@@ -159,17 +159,21 @@ function drawStaffFrame(
   if (showGrid) {
     const beatDuration = 60000 / bpm;
     const startBeat = Math.floor(scrollPosition / beatDuration) * beatDuration;
-    const visibleEndTime = scrollPosition + (width / pixelsPerSecond) * 1000;
+    const gridVisibleEndTime = scrollPosition + (width / pixelsPerSecond) * 1000;
 
     for (let i = 0; i < 50; i++) {
       const beatTime = startBeat + i * beatDuration;
-      if (beatTime > visibleEndTime + beatDuration) break;
+      if (beatTime > gridVisibleEndTime + beatDuration) break;
 
       const x = timeToX(beatTime);
       if (x < LEFT_MARGIN - 20 || x > width + 20) continue;
 
-      ctx.strokeStyle = i % 4 === 0 ? 'rgba(99, 102, 241, 0.6)' : 'rgba(99, 102, 241, 0.3)';
-      ctx.lineWidth = i % 4 === 0 ? 2 : 1;
+      /** 按绝对拍号对齐小节强拍（4/4：每 4 拍一条加粗），勿用循环下标 i%4（会随滚动错位） */
+      const beatIndex = Math.floor(beatTime / beatDuration + 1e-9);
+      const isBarlineBeat = beatIndex % 4 === 0;
+
+      ctx.strokeStyle = isBarlineBeat ? 'rgba(99, 102, 241, 0.6)' : 'rgba(99, 102, 241, 0.3)';
+      ctx.lineWidth = isBarlineBeat ? 2 : 1;
       ctx.beginPath();
       ctx.moveTo(x, TREBLE_BOTTOM_Y - 4 * LINE_SPACING - 30);
       ctx.lineTo(x, BASS_TOP_Y + 4 * LINE_SPACING + 30);

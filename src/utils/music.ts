@@ -1,13 +1,16 @@
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const C4_PITCH = 60;
 
-/** 与 `Staff` 画布一致的大谱表布局（高音谱表下加一线 = E4 附近锚点） */
+/** 与 `Staff` 画布一致的大谱表布局 */
 export const GRAND_STAFF_LAYOUT = {
   lineSpacing: 12,
   trebleBottomY: 220,
   bassTopY: 280,
   leftMargin: 100,
+  /** 高音谱表最下一线 = E4（MIDI 64） */
   referencePitch: 64,
+  /** 低音谱表最上一线 = A3（MIDI 57），须与 `bassTopY` 上第一线对齐 */
+  bassReferencePitch: 57,
 };
 
 export type GrandStaffLayout = typeof GRAND_STAFF_LAYOUT;
@@ -72,15 +75,25 @@ export const getStaffForPitch = (pitch: number): 'treble' | 'bass' => {
 
 /**
  * 大谱表纵向位置（与主界面 Staff 使用同一套线间映射）。
+ * 高音区以 E4 / trebleBottom 为锚；低音区以 A3 / bassTop 为锚（勿再用高音锚推算低音，否则会与五线错位）。
  */
 export function pitchToGrandStaffY(
   pitch: number,
-  layout: Pick<GrandStaffLayout, 'lineSpacing' | 'trebleBottomY' | 'referencePitch'> = GRAND_STAFF_LAYOUT,
+  layout: Pick<
+    GrandStaffLayout,
+    'lineSpacing' | 'trebleBottomY' | 'bassTopY' | 'referencePitch' | 'bassReferencePitch'
+  > = GRAND_STAFF_LAYOUT,
 ): { y: number; staff: 'treble' | 'bass' } {
-  const { lineSpacing, trebleBottomY, referencePitch } = layout;
-  const diatonicDiff = getDiatonicIndex(pitch) - getDiatonicIndex(referencePitch);
-  const y = trebleBottomY - diatonicDiff * (lineSpacing / 2);
-  return { y, staff: getStaffForPitch(pitch) };
+  const { lineSpacing, trebleBottomY, bassTopY, referencePitch, bassReferencePitch } = layout;
+  const staff = getStaffForPitch(pitch);
+  if (staff === 'treble') {
+    const diatonicDiff = getDiatonicIndex(pitch) - getDiatonicIndex(referencePitch);
+    const y = trebleBottomY - diatonicDiff * (lineSpacing / 2);
+    return { y, staff };
+  }
+  const diatonicDiff = getDiatonicIndex(pitch) - getDiatonicIndex(bassReferencePitch);
+  const y = bassTopY - diatonicDiff * (lineSpacing / 2);
+  return { y, staff };
 }
 
 export type LedgerLayout = Pick<GrandStaffLayout, 'lineSpacing' | 'trebleBottomY' | 'bassTopY'>;
