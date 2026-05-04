@@ -1,6 +1,12 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import { Note } from '../types';
-import { GRAND_STAFF_LAYOUT, pitchToGrandStaffY } from '../utils/music';
+import {
+  GRAND_STAFF_LAYOUT,
+  pitchToGrandStaffY,
+  getAccidentalUnicode,
+  getLedgerLineYs,
+  getStaffForPitch,
+} from '../utils/music';
 
 const DIAG_STAFF = {
   ...GRAND_STAFF_LAYOUT,
@@ -182,17 +188,45 @@ export const DiagnosticPage: React.FC = () => {
       const { y } = pitchToGrandStaffY(note.pitch, DIAG_STAFF);
 
       const alpha = 0.82 + (note.velocity / 127) * 0.18;
+      const headRy = lineSpacing * 0.42;
+      const headRx = lineSpacing * 0.48;
+      const staff = getStaffForPitch(note.pitch);
+
+      ctx.strokeStyle = '#2d3748';
+      ctx.lineWidth = 1.5;
+      for (const ly of getLedgerLineYs(y, staff, DIAG_STAFF, headRy)) {
+        ctx.beginPath();
+        ctx.moveTo(x - 14, ly);
+        ctx.lineTo(x + 14, ly);
+        ctx.stroke();
+      }
+
+      const accidental = getAccidentalUnicode(note.pitch);
+      if (accidental) {
+        const accRightX = x - headRx - lineSpacing * 0.42;
+        ctx.save();
+        ctx.fillStyle = '#050505';
+        ctx.font =
+          '600 16px "Segoe UI Symbol", "Apple Symbols", "Noto Music", "Arial Unicode MS", sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'right';
+        ctx.fillText(accidental, accRightX, y);
+        ctx.restore();
+      }
+
       ctx.fillStyle = `rgba(12, 12, 14, ${alpha})`;
       ctx.strokeStyle = '#000000';
       ctx.lineWidth = 2;
 
       ctx.beginPath();
-      ctx.ellipse(x, y, 12, 8, -0.3, 0, Math.PI * 2);
+      ctx.ellipse(x, y, headRx, headRy, -0.3, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
 
       ctx.fillStyle = '#525252';
       ctx.font = '10px Arial';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
       ctx.fillText(`${note.pitch}`, x + 15, y + 4);
     });
 

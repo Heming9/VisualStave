@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import type { MutableRefObject } from 'react';
 import type { MidiMessage, Note } from '../types';
 import { useAppStore } from '../store/useAppStore';
-import { computeAlignedStartTime } from '../utils/chordAlignment';
+import { alignNoteOnToChordCluster } from '../utils/chordAlignment';
 import { dropNotesFullyPastViewport } from '../utils/noteRetention';
 
 const MAX_RETAINED_NOTES = 4000;
@@ -45,7 +45,6 @@ export function useRealtimeNotes({
   const setNotes = useAppStore((s) => s.setNotes);
 
   const notesRef = useRef<Note[]>([]);
-  const lastNoteTimeRef = useRef(0);
   const lastStoreSyncRef = useRef(0);
   const storeSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -116,7 +115,6 @@ export function useRealtimeNotes({
   );
 
   const clearRecording = useCallback(() => {
-    lastNoteTimeRef.current = 0;
     lastStoreSyncRef.current = 0;
     if (storeSyncTimerRef.current) {
       clearTimeout(storeSyncTimerRef.current);
@@ -159,28 +157,30 @@ export function useRealtimeNotes({
     const unsubscribe = subscribeToMidi((msg) => {
       if (msg.type === 'noteOn') {
         const timestamp = msg.timestamp;
-        const alignedStart = computeAlignedStartTime(
+        const { clusterAnchorMs, playingIdsToSnap } = alignNoteOnToChordCluster(
           timestamp,
           notesRef.current,
           chordThreshold,
-          lastNoteTimeRef.current,
         );
-        lastNoteTimeRef.current = timestamp;
+
+        const patched = notesRef.current.map((n) =>
+          playingIdsToSnap.has(n.id) ? { ...n, startTime: clusterAnchorMs } : n,
+        );
 
         const newNote = {
           id: `${timestamp}-${msg.pitch}`,
           pitch: msg.pitch,
           velocity: msg.velocity,
-          startTime: alignedStart,
+          startTime: clusterAnchorMs,
           isPlaying: true,
         };
 
-        const next = [...notesRef.current, newNote];
+        const next = [...patched, newNote];
         pruneAndCommit(next);
         queueStatsDelta({ notes: 1 });
 
         const playingSameStart = notesRef.current.filter(
-          (n) => n.startTime === alignedStart && n.isPlaying,
+          (n) => n.startTime === clusterAnchorMs && n.isPlaying,
         );
         if (playingSameStart.length === 2) {
           queueStatsDelta({ chords: 1 });

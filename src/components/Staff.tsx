@@ -3,8 +3,15 @@ import { Note } from '../types';
 import {
   GRAND_STAFF_LAYOUT,
   pitchToGrandStaffY,
-  isBlackKey,
+  getAccidentalUnicode,
+  getLedgerLineYs,
 } from '../utils/music';
+import {
+  anchorChordOnsetTimes,
+  buildNoteHeadStaggerOffsets,
+  compareNotesDrawOrder,
+  CHORD_ONSET_CLUSTER_MS,
+} from '../utils/chordLayout';
 
 interface StaffProps {
   width?: number;
@@ -20,6 +27,10 @@ interface StaffProps {
 
 const { lineSpacing: LINE_SPACING, trebleBottomY: TREBLE_BOTTOM_Y, bassTopY: BASS_TOP_Y, leftMargin: LEFT_MARGIN } =
   GRAND_STAFF_LAYOUT;
+
+/** 间高约等于 LINE_SPACING；符头竖直径略小于间宽以免溢出 */
+const NOTE_HEAD_RY = LINE_SPACING * 0.42;
+const NOTE_HEAD_RX = LINE_SPACING * 0.48;
 
 type FrameParams = {
   width: number;
@@ -102,44 +113,12 @@ function drawStaffFrame(
   const drawLedgerLines = (x: number, y: number, staff: 'treble' | 'bass') => {
     ctx.strokeStyle = '#1a202c';
     ctx.lineWidth = 1.5;
-
-    const TREBLE_TOP = TREBLE_BOTTOM_Y - 4 * LINE_SPACING;
-    const TREBLE_BOTTOM = TREBLE_BOTTOM_Y;
-    const BASS_BOTTOM = BASS_TOP_Y + 4 * LINE_SPACING;
-
-    let ledgerStartY = 0;
-    let ledgerEndY = 0;
-    let drawLedger = false;
-
-    if (staff === 'treble' && y < TREBLE_TOP - LINE_SPACING) {
-      ledgerStartY = TREBLE_TOP - LINE_SPACING;
-      ledgerEndY = y + LINE_SPACING;
-      drawLedger = true;
-    }
-    if (staff === 'treble' && y > TREBLE_BOTTOM + LINE_SPACING) {
-      ledgerStartY = TREBLE_BOTTOM + LINE_SPACING;
-      ledgerEndY = y - LINE_SPACING;
-      drawLedger = true;
-    }
-    if (staff === 'bass' && y < BASS_TOP_Y - LINE_SPACING) {
-      ledgerStartY = BASS_TOP_Y - LINE_SPACING;
-      ledgerEndY = y + LINE_SPACING;
-      drawLedger = true;
-    }
-    if (staff === 'bass' && y > BASS_BOTTOM + LINE_SPACING) {
-      ledgerStartY = BASS_BOTTOM + LINE_SPACING;
-      ledgerEndY = y - LINE_SPACING;
-      drawLedger = true;
-    }
-
-    if (drawLedger) {
-      const step = ledgerEndY > ledgerStartY ? LINE_SPACING : -LINE_SPACING;
-      for (let ly = ledgerStartY; step > 0 ? ly <= ledgerEndY : ly >= ledgerEndY; ly += step) {
-        ctx.beginPath();
-        ctx.moveTo(x - 16, ly);
-        ctx.lineTo(x + 16, ly);
-        ctx.stroke();
-      }
+    const halfHead = NOTE_HEAD_RY;
+    for (const ly of getLedgerLineYs(y, staff, GRAND_STAFF_LAYOUT, halfHead)) {
+      ctx.beginPath();
+      ctx.moveTo(x - 16, ly);
+      ctx.lineTo(x + 16, ly);
+      ctx.stroke();
     }
   };
 
@@ -151,32 +130,76 @@ function drawStaffFrame(
     startIndex++;
   }
 
+  const candidates: Note[] = [];
   for (let i = startIndex; i < notes.length; i++) {
     const note = notes[i];
     const tailTime = note.endTime ?? currentTime;
     if (tailTime < visibleStartTime || note.startTime > visibleEndTime) continue;
+    candidates.push(note);
+  }
 
-    const xStart = timeToX(note.startTime);
-    if (xStart < LEFT_MARGIN - 50 || xStart > width + 50) continue;
+  const anchorById = anchorChordOnsetTimes(candidates, CHORD_ONSET_CLUSTER_MS);
+
+  const visible: Note[] = [];
+  for (const note of candidates) {
+    const anchor = anchorById.get(note.id) ?? note.startTime;
+    const xAnchor = timeToX(anchor);
+    if (xAnchor < LEFT_MARGIN - 50 || xAnchor > width + 50) continue;
+    visible.push(note);
+  }
+
+  const layoutItems = visible.map((note) => {
+    const anchor = anchorById.get(note.id) ?? note.startTime;
+    const { y } = pitchToGrandStaffY(note.pitch);
+    return {
+      id: note.id,
+      pitch: note.pitch,
+      anchorOnsetMs: anchor,
+      xBase: timeToX(anchor),
+      y,
+    };
+  });
+
+  const dxMap = buildNoteHeadStaggerOffsets(layoutItems, {
+    noteHeadRx: NOTE_HEAD_RX,
+    noteHeadRy: NOTE_HEAD_RY,
+    lineSpacing: LINE_SPACING,
+  });
+
+  visible.sort((a, b) => compareNotesDrawOrder(a, b, dxMap, anchorById));
+
+  for (const note of visible) {
+    const anchor = anchorById.get(note.id) ?? note.startTime;
+    const xBase = timeToX(anchor);
+    const dx = dxMap.get(note.id) ?? 0;
+    const xDraw = xBase + dx;
 
     const { y, staff } = pitchToGrandStaffY(note.pitch);
     const alpha = 0.82 + (note.velocity / 127) * 0.18;
 
-    drawLedgerLines(xStart, y, staff);
+    drawLedgerLines(xDraw, y, staff);
+
+    const accidental = getAccidentalUnicode(note.pitch);
+    if (accidental) {
+      const gapFromHead = LINE_SPACING * 0.42;
+      const accRightX = xDraw - NOTE_HEAD_RX - gapFromHead;
+      ctx.save();
+      ctx.fillStyle = '#050505';
+      ctx.font =
+        '600 16px "Segoe UI Symbol", "Apple Symbols", "Noto Music", "Arial Unicode MS", sans-serif';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'right';
+      ctx.fillText(accidental, accRightX, y);
+      ctx.restore();
+    }
 
     ctx.fillStyle = `rgba(12, 12, 14, ${alpha})`;
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.ellipse(xStart, y, 11, 8, -0.3, 0, Math.PI * 2);
+    ctx.ellipse(xDraw, y, NOTE_HEAD_RX, NOTE_HEAD_RY, -0.3, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-
-    if (isBlackKey(note.pitch)) {
-      ctx.fillStyle = '#d4d4d4';
-      ctx.font = 'bold 10px Arial';
-      ctx.fillText('#', xStart - 3, y - 2);
-    }
   }
 
   const playheadX = timeToX(currentTime);
