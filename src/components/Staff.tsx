@@ -302,7 +302,10 @@ function drawStaffFrame(
   }
 
   /** 同 anchor + 同谱表：共用一根符干（符杠宽度用整组符头 span） */
-  const chordStemInfo = new Map<string, { championId: string; stemDown: boolean; stemX: number }>();
+  const chordStemInfo = new Map<
+    string,
+    { championId: string; stemDown: boolean; stemX: number; minStemThroughChord: number }
+  >();
   for (const [, members] of clusterMembers) {
     if (members.length < 2) continue;
     const staff = pitchToGrandStaffY(members[0]!.pitch).staff;
@@ -318,19 +321,33 @@ function drawStaffFrame(
       }
     }
     const chordStemDown = stemDownForStaff(farY, staff);
+    /** 上行：符干从最低音一侧起笔；下行：从最高音一侧起笔（此前反了会导致符干只挂在最上方/错位） */
     const champion = chordStemDown
-      ? members.reduce((a, b) => (a.pitch < b.pitch ? a : b))
-      : members.reduce((a, b) => (a.pitch > b.pitch ? a : b));
-    const championAnchor = anchorById.get(champion.id) ?? champion.startTime;
-    const championXDraw = timeToX(championAnchor) + (dxMap.get(champion.id) ?? 0);
-    const sharedStemX = chordStemDown
-      ? championXDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR
-      : championXDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR;
+      ? members.reduce((a, b) => (a.pitch > b.pitch ? a : b))
+      : members.reduce((a, b) => (a.pitch < b.pitch ? a : b));
+    const memberXDraws = members.map((m) => {
+      const a = anchorById.get(m.id) ?? m.startTime;
+      return timeToX(a) + (dxMap.get(m.id) ?? 0);
+    });
+    const minChordX = Math.min(...memberXDraws);
+    const maxChordX = Math.max(...memberXDraws);
+    const stemSide = NOTE_HEAD_RX * STEM_HEAD_X_FACTOR;
+    /** 错位后低音在左、高音在右：符干应落在整簇最外缘，避免只贴在 champion 一侧导致中间「断干」 */
+    const sharedStemX = chordStemDown ? minChordX - stemSide : maxChordX + stemSide;
+    const yTop = Math.min(...ys);
+    const yBot = Math.max(...ys);
+    const chordSpan = yBot - yTop;
+    /**
+     * 竖符干从 champion（上行最低音 / 下行最高音）起笔，须先跨过整组和弦再伸出约单音符干长。
+     * 若只用 STEM_LENGTH，大跨度和弦时末端够不到对侧符头，会像「只画了半截」或接错向。
+     */
+    const minStemThroughChord = chordSpan + STEM_LENGTH + NOTE_HEAD_RY * 0.35;
     for (const m of members) {
       chordStemInfo.set(m.id, {
         championId: champion.id,
         stemDown: chordStemDown,
         stemX: sharedStemX,
+        minStemThroughChord,
       });
     }
   }
@@ -354,6 +371,7 @@ function drawStaffFrame(
       chord?.stemX ??
       (stemDown ? xDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR : xDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR);
     const durationMs = Math.max(1, (note.endTime ?? currentTime) - note.startTime);
+    const chordKey = chord !== undefined ? k : undefined;
     return {
       id: note.id,
       anchorMs: anchor,
@@ -365,6 +383,7 @@ function drawStaffFrame(
       headSpanMinX,
       headSpanMaxX,
       durationMs,
+      chordClusterKey: chordKey,
     };
   });
 
@@ -403,21 +422,54 @@ function drawStaffFrame(
     const alpha = 0.82 + (note.velocity / 127) * 0.18;
     const blSelf = beamById.get(note.id)!;
     const chord = chordStemInfo.get(note.id);
-    const championBl = chord ? beamById.get(chord.championId)! : blSelf;
-    const stemDown =
-      chord?.stemDown ??
-      (blSelf.isBeamed && blSelf.beamedStemDown !== undefined
-        ? blSelf.beamedStemDown
-        : stemDownForStaff(y, staff));
-    const stemX =
-      chord?.stemX ??
-      (blSelf.isBeamed && blSelf.beamedStemX !== undefined
-        ? blSelf.beamedStemX
-        : stemDown
-          ? xDraw - stemSideOffset
-          : xDraw + stemSideOffset);
-    const drawsStem = !chord || chord.championId === note.id;
-    const drawsFlags = drawsStem && !championBl.isBeamed && championBl.flagCount > 0;
+    const clusterKey = `${anchor}|${staff}`;
+    const clusterNotes = clusterMembers.get(clusterKey)!;
+    const beamed =
+      blSelf.isBeamed &&
+      blSelf.beamedStemDown !== undefined &&
+      blSelf.beamedStemX !== undefined;
+    /**
+     * 上梁后符干起笔音须与梁统一朝向一致：下行从最高音、上行从最低音。
+     * 若仍用 chordStemInfo.championId（按和弦局部朝向选），梁改成上行时 champion 可能还是低音，
+     * 竖线从低音往上画，顶音接不上；或梁下行却仍从低音起笔，只剩「半截」符干。
+     */
+    let stemChampionId = chord?.championId ?? note.id;
+    if (beamed && chord) {
+      const sd = blSelf.beamedStemDown!;
+      stemChampionId = sd
+        ? clusterNotes.reduce((a, b) => (a.pitch > b.pitch ? a : b)).id
+        : clusterNotes.reduce((a, b) => (a.pitch < b.pitch ? a : b)).id;
+    }
+    const championBl = chord ? beamById.get(stemChampionId)! : blSelf;
+    /** 符杠优先：上梁后朝向与 stemX 须与梁一致；和弦不能再盖掉 beamed（否则会画到符头另一侧、梁与符干脱节） */
+    let stemDown: boolean;
+    let stemX: number;
+    if (beamed) {
+      stemDown = blSelf.beamedStemDown!;
+      if (chord) {
+        stemX = beamById.get(stemChampionId)!.beamedStemX!;
+      } else {
+        stemX = blSelf.beamedStemX!;
+      }
+    } else if (chord) {
+      stemDown = chord.stemDown;
+      stemX = chord.stemX;
+    } else {
+      stemDown = stemDownForStaff(y, staff);
+      stemX = stemDown ? xDraw - stemSideOffset : xDraw + stemSideOffset;
+    }
+    const drawsStem = !chord || stemChampionId === note.id;
+    /** 未编入符杠的短时值不画弯尾；有符杠时由梁表示时值，亦不画符尾 */
+    const drawsFlags = false;
+    const chordStemFloor = chord?.minStemThroughChord ?? 0;
+    /** 上梁时符干长度必须落在梁上，不能再与 minStemThroughChord 取 max，否则会穿出梁或顶飞横梁 */
+    const effStemLen =
+      drawsStem && chord && !beamed
+        ? Math.max(championBl.stemLen, chordStemFloor)
+        : drawsStem
+          ? championBl.stemLen
+          : 0;
+    const effStemTipY = drawsStem ? (stemDown ? y + effStemLen : y - effStemLen) : 0;
     return {
       note,
       xDraw,
@@ -426,8 +478,8 @@ function drawStaffFrame(
       alpha,
       stemX,
       stemDown,
-      stemLen: drawsStem ? championBl.stemLen : 0,
-      stemTipY: drawsStem ? championBl.stemTipY : 0,
+      stemLen: effStemLen,
+      stemTipY: effStemTipY,
       flagCount: championBl.flagCount,
       isBeamed: blSelf.isBeamed,
       drawsStem,
@@ -439,6 +491,23 @@ function drawStaffFrame(
     drawLedgerLines(r.xDraw, r.y, r.staff);
   }
 
+  /** 和弦错位：各符头符干侧到公共 stemX 的短横线，避免两符头之间「空一截」 */
+  for (const r of rows) {
+    if (!chordStemInfo.has(r.note.id)) continue;
+    const attachX = r.stemDown ? r.xDraw - stemSideOffset : r.xDraw + stemSideOffset;
+    const sx = r.stemX;
+    if (Math.abs(sx - attachX) < 0.4) continue;
+    ctx.save();
+    ctx.strokeStyle = `rgba(26, 26, 30, ${r.alpha})`;
+    ctx.lineWidth = 1.35;
+    ctx.lineCap = 'butt';
+    ctx.beginPath();
+    ctx.moveTo(attachX, r.y);
+    ctx.lineTo(sx, r.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   /** 符梁盖住符干端点；圆帽会伸出梁外形成突起，故符杠音符用平头并略缩进梁内 */
   const STEM_BEAM_TRIM = 0.65;
 
@@ -448,10 +517,11 @@ function drawStaffFrame(
     if (r.isBeamed) {
       stemY1 = r.stemDown ? stemY1 - STEM_BEAM_TRIM : stemY1 + STEM_BEAM_TRIM;
     }
+    const chordMember = chordStemInfo.has(r.note.id);
     ctx.save();
     ctx.strokeStyle = `rgba(26, 26, 30, ${r.alpha})`;
     ctx.lineWidth = 1.35;
-    ctx.lineCap = r.isBeamed ? 'butt' : 'round';
+    ctx.lineCap = r.isBeamed || chordMember ? 'butt' : 'round';
     ctx.beginPath();
     ctx.moveTo(r.stemX, r.y);
     ctx.lineTo(r.stemX, stemY1);

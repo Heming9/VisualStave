@@ -11,6 +11,8 @@ export interface BeamableNote {
   headSpanMinX: number;
   headSpanMaxX: number;
   durationMs: number;
+  /** 同簇和弦（Staff 内 `${anchor}|${staff}`）；仅同一和弦内多音同时短时值时用于跳过退化符杠 */
+  chordClusterKey?: string;
 }
 
 export interface BeamLayoutResult {
@@ -172,6 +174,17 @@ export function layoutBeamAndStems(
       }
 
       if (group.length >= 2) {
+        const ck0 = group[0]!.chordClusterKey;
+        const groupIsSingleChordCluster =
+          ck0 !== undefined &&
+          ck0.length > 0 &&
+          group.every((g) => g.chordClusterKey === ck0);
+        /** 同一和弦簇内多音 stemX 常相同，回归会退化成水平「符杠块」；无其它声部参与时不画符杠 */
+        if (groupIsSingleChordCluster) {
+          i = j;
+          continue;
+        }
+
         const unified = unifiedStemDownForBeamGroup(group, stemDownForStaff, midStaffY);
         const stemLenConst = defaultStemLenPx(stemLengthConst);
         const stemXs = group.map((g) =>
