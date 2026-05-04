@@ -2,9 +2,12 @@ export interface BeamableNote {
   id: string;
   anchorMs: number;
   staff: 'treble' | 'bass';
+  /** 入参时的朝向（分组时不再强制一致）；符杠组内会覆盖 */
   stemDown: boolean;
   y: number;
   stemX: number;
+  /** 符头中心 X，用于符杠统一朝向后重算 stemX */
+  centerX: number;
   headSpanMinX: number;
   headSpanMaxX: number;
   durationMs: number;
@@ -19,6 +22,9 @@ export interface BeamLayoutResult {
   beamOuterY: number | null;
   beamMinX: number | null;
   beamMaxX: number | null;
+  /** 符杠组统一符干（仅 isBeamed 时写入） */
+  beamedStemDown?: boolean;
+  beamedStemX?: number;
 }
 
 /** 外梁中心线端点 + 用于内梁法向的符头重心（相对梁中点） */
@@ -91,10 +97,33 @@ function linearRegressionSlopeIntercept(
   return { m, b };
 }
 
+/** 与和弦逻辑一致：距该谱表第三线最远的音决定整组符干朝向 */
+function unifiedStemDownForBeamGroup(
+  group: BeamableNote[],
+  stemDownForStaff: (y: number, staff: 'treble' | 'bass') => boolean,
+  midStaffY: (staff: 'treble' | 'bass') => number,
+): boolean {
+  const staff = group[0]!.staff;
+  const midY = midStaffY(staff);
+  let farY = group[0]!.y;
+  let bestD = -1;
+  for (const g of group) {
+    const d = Math.abs(g.y - midY);
+    if (d > bestD) {
+      bestD = d;
+      farY = g.y;
+    }
+  }
+  return stemDownForStaff(farY, staff);
+}
+
 export function layoutBeamAndStems(
   notes: BeamableNote[],
   bpm: number,
   stemLengthConst: number,
+  stemSideOffset: number,
+  stemDownForStaff: (y: number, staff: 'treble' | 'bass') => boolean,
+  midStaffY: (staff: 'treble' | 'bass') => number,
 ): { byId: Map<string, BeamLayoutResult>; beams: BeamStroke[] } {
   const quarterMs = quarterMsFromBpm(bpm);
   const eighthMs = quarterMs / 2;
@@ -131,13 +160,11 @@ export function layoutBeamAndStems(
     while (i < list.length) {
       const start = list[i]!;
       const beatKey = Math.floor(start.anchorMs / quarterMs);
-      const stemDown = start.stemDown;
       const group: BeamableNote[] = [start];
       let j = i + 1;
       while (j < list.length) {
         const m = list[j]!;
         if (Math.floor(m.anchorMs / quarterMs) !== beatKey) break;
-        if (m.stemDown !== stemDown) break;
         const gap = m.anchorMs - group[group.length - 1]!.anchorMs;
         if (gap > eighthMs * 2.35) break;
         group.push(m);
@@ -145,17 +172,21 @@ export function layoutBeamAndStems(
       }
 
       if (group.length >= 2) {
-        const maxFlags = Math.min(3, Math.max(1, ...group.map((g) => flagById.get(g.id)!)));
-        const stemLens = group.map(() => defaultStemLenPx(stemLengthConst));
-        const defaultTips = group.map((g, idx) => (stemDown ? g.y + stemLens[idx]! : g.y - stemLens[idx]!));
-        const pts = group.map((g, idx) => ({ x: g.stemX, y: defaultTips[idx]! }));
+        const unified = unifiedStemDownForBeamGroup(group, stemDownForStaff, midStaffY);
+        const stemLenConst = defaultStemLenPx(stemLengthConst);
+        const stemXs = group.map((g) =>
+          unified ? g.centerX - stemSideOffset : g.centerX + stemSideOffset,
+        );
+        const defaultTips = group.map((_, idx) =>
+          unified ? group[idx]!.y + stemLenConst : group[idx]!.y - stemLenConst,
+        );
+        const pts = group.map((_, idx) => ({ x: stemXs[idx]!, y: defaultTips[idx]! }));
         const { m, b } = linearRegressionSlopeIntercept(pts);
         const pad = stemLengthConst * 0.06;
-        const bAdj = stemDown ? b + pad : b - pad;
+        const bAdj = unified ? b + pad : b - pad;
 
-        /** 梁端必须落在最外两根符干的 stemX 上；混用符头 span 会左右不对称 → 一端悬空、一端外凸 */
-        const stemXMin = Math.min(...group.map((g) => g.stemX));
-        const stemXMax = Math.max(...group.map((g) => g.stemX));
+        const stemXMin = Math.min(...stemXs);
+        const stemXMax = Math.max(...stemXs);
         let x0 = stemXMin;
         let x1 = stemXMax;
         if (x1 - x0 < stemLengthConst * 0.35) {
@@ -167,7 +198,9 @@ export function layoutBeamAndStems(
         const y0 = m * x0 + bAdj;
         const y1 = m * x1 + bAdj;
         const headMeanY = group.reduce((s, g) => s + g.y, 0) / group.length;
-        const headMeanX = group.reduce((s, g) => s + g.stemX, 0) / group.length;
+        const headMeanX = stemXs.reduce((s, v) => s + v, 0) / stemXs.length;
+
+        const maxFlags = Math.min(3, Math.max(1, ...group.map((g) => flagById.get(g.id)!)));
 
         beams.push({
           x0,
@@ -175,16 +208,17 @@ export function layoutBeamAndStems(
           x1,
           y1,
           parallelLines: maxFlags,
-          stemDown,
+          stemDown: unified,
           headMeanX,
           headMeanY,
         });
 
         for (let gi = 0; gi < group.length; gi++) {
           const g = group[gi]!;
-          const tipOnBeam = m * g.stemX + bAdj;
-          const stemLen = stemDown ? tipOnBeam - g.y : g.y - tipOnBeam;
-          const stemTipY = stemDown ? g.y + stemLen : g.y - stemLen;
+          const sx = stemXs[gi]!;
+          const tipOnBeam = m * sx + bAdj;
+          const stemLen = unified ? tipOnBeam - g.y : g.y - tipOnBeam;
+          const stemTipY = unified ? g.y + stemLen : g.y - stemLen;
           byId.set(g.id, {
             flagCount: flagById.get(g.id)!,
             stemLen: Math.max(stemLengthConst * 0.35, stemLen),
@@ -194,6 +228,8 @@ export function layoutBeamAndStems(
             beamOuterY: tipOnBeam,
             beamMinX: x0,
             beamMaxX: x1,
+            beamedStemDown: unified,
+            beamedStemX: sx,
           });
         }
         i = j;

@@ -38,13 +38,15 @@ const STEM_LENGTH = LINE_SPACING * 3.5;
 /** 与倾斜椭圆符头视觉相接的水平偏移 */
 const STEM_HEAD_X_FACTOR = 0.62;
 
+function midStaffY(staff: 'treble' | 'bass'): number {
+  return staff === 'treble' ? TREBLE_BOTTOM_Y - 2 * LINE_SPACING : BASS_TOP_Y + 2 * LINE_SPACING;
+}
+
 function stemDownForStaff(y: number, staff: 'treble' | 'bass'): boolean {
   if (staff === 'treble') {
-    const midY = TREBLE_BOTTOM_Y - 2 * LINE_SPACING;
-    return y <= midY;
+    return y <= midStaffY('treble');
   }
-  const midY = BASS_TOP_Y + 2 * LINE_SPACING;
-  return y >= midY;
+  return y >= midStaffY('bass');
 }
 
 const BEAM_LINE_H = 2.9;
@@ -305,8 +307,7 @@ function drawStaffFrame(
     if (members.length < 2) continue;
     const staff = pitchToGrandStaffY(members[0]!.pitch).staff;
     const ys = members.map((m) => pitchToGrandStaffY(m.pitch).y);
-    const midY =
-      staff === 'treble' ? TREBLE_BOTTOM_Y - 2 * LINE_SPACING : BASS_TOP_Y + 2 * LINE_SPACING;
+    const midY = midStaffY(staff);
     let farY = ys[0]!;
     let bestD = -1;
     for (const y of ys) {
@@ -360,13 +361,22 @@ function drawStaffFrame(
       stemDown,
       y,
       stemX,
+      centerX: xDraw,
       headSpanMinX,
       headSpanMaxX,
       durationMs,
     };
   });
 
-  const { byId: beamById, beams } = layoutBeamAndStems(beamInputs, bpm, STEM_LENGTH);
+  const stemSideOffset = NOTE_HEAD_RX * STEM_HEAD_X_FACTOR;
+  const { byId: beamById, beams } = layoutBeamAndStems(
+    beamInputs,
+    bpm,
+    STEM_LENGTH,
+    stemSideOffset,
+    stemDownForStaff,
+    midStaffY,
+  );
 
   type NoteRow = {
     note: Note;
@@ -394,10 +404,18 @@ function drawStaffFrame(
     const blSelf = beamById.get(note.id)!;
     const chord = chordStemInfo.get(note.id);
     const championBl = chord ? beamById.get(chord.championId)! : blSelf;
-    const stemDown = chord?.stemDown ?? stemDownForStaff(y, staff);
+    const stemDown =
+      chord?.stemDown ??
+      (blSelf.isBeamed && blSelf.beamedStemDown !== undefined
+        ? blSelf.beamedStemDown
+        : stemDownForStaff(y, staff));
     const stemX =
       chord?.stemX ??
-      (stemDown ? xDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR : xDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR);
+      (blSelf.isBeamed && blSelf.beamedStemX !== undefined
+        ? blSelf.beamedStemX
+        : stemDown
+          ? xDraw - stemSideOffset
+          : xDraw + stemSideOffset);
     const drawsStem = !chord || chord.championId === note.id;
     const drawsFlags = drawsStem && !championBl.isBeamed && championBl.flagCount > 0;
     return {
