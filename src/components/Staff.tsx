@@ -12,6 +12,7 @@ import {
   compareNotesDrawOrder,
   CHORD_ONSET_CLUSTER_MS,
 } from '../utils/chordLayout';
+import { layoutBeamAndStems, type BeamStroke } from '../utils/beamLayout';
 
 interface StaffProps {
   width?: number;
@@ -44,6 +45,61 @@ function stemDownForStaff(y: number, staff: 'treble' | 'bass'): boolean {
   }
   const midY = BASS_TOP_Y + 2 * LINE_SPACING;
   return y >= midY;
+}
+
+const BEAM_LINE_H = 2.9;
+const BEAM_PARALLEL_GAP = 3.5;
+
+function drawBeamStack(ctx: CanvasRenderingContext2D, beam: BeamStroke, alpha: number): void {
+  const { beamMinX, beamMaxX, beamOuterY, parallelLines, stemDown } = beam;
+  const w = beamMaxX - beamMinX + 2.5;
+  const x0 = beamMinX - 1.25;
+  const a = Math.min(1, alpha * 0.98);
+  ctx.fillStyle = `rgba(22, 22, 28, ${a})`;
+  for (let k = 0; k < parallelLines; k++) {
+    const yy = stemDown ? beamOuterY - k * BEAM_PARALLEL_GAP : beamOuterY + k * BEAM_PARALLEL_GAP;
+    ctx.fillRect(x0, yy - BEAM_LINE_H / 2, w, BEAM_LINE_H);
+  }
+}
+
+function drawOneEighthFlag(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  tipY: number,
+  stemDown: boolean,
+  alpha: number,
+): void {
+  const w = LINE_SPACING * 0.52;
+  const h = LINE_SPACING * 1.05;
+  ctx.fillStyle = `rgba(22, 22, 28, ${alpha * 0.96})`;
+  ctx.beginPath();
+  if (stemDown) {
+    ctx.moveTo(sx, tipY);
+    ctx.quadraticCurveTo(sx + w * 1.15, tipY + h * 0.12, sx + w * 0.82, tipY + h);
+    ctx.quadraticCurveTo(sx + w * 0.28, tipY + h * 0.62, sx, tipY + h * 0.28);
+  } else {
+    ctx.moveTo(sx, tipY);
+    ctx.quadraticCurveTo(sx - w * 1.15, tipY - h * 0.12, sx - w * 0.82, tipY - h);
+    ctx.quadraticCurveTo(sx - w * 0.28, tipY - h * 0.62, sx, tipY - h * 0.28);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawStackedFlags(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  stemTipY: number,
+  stemDown: boolean,
+  flagCount: number,
+  alpha: number,
+): void {
+  const stack = LINE_SPACING * 0.36;
+  for (let f = 0; f < flagCount; f++) {
+    const along = f * stack;
+    const tipY = stemDown ? stemTipY - along : stemTipY + along;
+    drawOneEighthFlag(ctx, sx, tipY, stemDown, alpha);
+  }
 }
 
 type FrameParams = {
@@ -182,51 +238,182 @@ function drawStaffFrame(
 
   visible.sort((a, b) => compareNotesDrawOrder(a, b, dxMap, anchorById));
 
+  const clusterMembers = new Map<string, Note[]>();
   for (const note of visible) {
+    const anchor = anchorById.get(note.id) ?? note.startTime;
+    const { staff } = pitchToGrandStaffY(note.pitch);
+    const k = `${anchor}|${staff}`;
+    if (!clusterMembers.has(k)) clusterMembers.set(k, []);
+    clusterMembers.get(k)!.push(note);
+  }
+
+  /** 同 anchor + 同谱表：共用一根符干（符杠宽度用整组符头 span） */
+  const chordStemInfo = new Map<string, { championId: string; stemDown: boolean; stemX: number }>();
+  for (const [, members] of clusterMembers) {
+    if (members.length < 2) continue;
+    const staff = pitchToGrandStaffY(members[0]!.pitch).staff;
+    const ys = members.map((m) => pitchToGrandStaffY(m.pitch).y);
+    const midY =
+      staff === 'treble' ? TREBLE_BOTTOM_Y - 2 * LINE_SPACING : BASS_TOP_Y + 2 * LINE_SPACING;
+    let farY = ys[0]!;
+    let bestD = -1;
+    for (const y of ys) {
+      const d = Math.abs(y - midY);
+      if (d > bestD) {
+        bestD = d;
+        farY = y;
+      }
+    }
+    const chordStemDown = stemDownForStaff(farY, staff);
+    const champion = chordStemDown
+      ? members.reduce((a, b) => (a.pitch < b.pitch ? a : b))
+      : members.reduce((a, b) => (a.pitch > b.pitch ? a : b));
+    const championAnchor = anchorById.get(champion.id) ?? champion.startTime;
+    const championXDraw = timeToX(championAnchor) + (dxMap.get(champion.id) ?? 0);
+    const sharedStemX = chordStemDown
+      ? championXDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR
+      : championXDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR;
+    for (const m of members) {
+      chordStemInfo.set(m.id, {
+        championId: champion.id,
+        stemDown: chordStemDown,
+        stemX: sharedStemX,
+      });
+    }
+  }
+
+  const beamInputs = visible.map((note) => {
+    const anchor = anchorById.get(note.id) ?? note.startTime;
+    const dx = dxMap.get(note.id) ?? 0;
+    const xBase = timeToX(anchor);
+    const xDraw = xBase + dx;
+    const { y, staff } = pitchToGrandStaffY(note.pitch);
+    const k = `${anchor}|${staff}`;
+    const group = clusterMembers.get(k)!;
+    const xDraws = group.map(
+      (nn) => timeToX(anchorById.get(nn.id) ?? nn.startTime) + (dxMap.get(nn.id) ?? 0),
+    );
+    const headSpanMinX = Math.min(...xDraws) - NOTE_HEAD_RX * 0.65;
+    const headSpanMaxX = Math.max(...xDraws) + NOTE_HEAD_RX * 0.65;
+    const chord = chordStemInfo.get(note.id);
+    const stemDown = chord?.stemDown ?? stemDownForStaff(y, staff);
+    const stemX =
+      chord?.stemX ??
+      (stemDown ? xDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR : xDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR);
+    const durationMs = Math.max(1, (note.endTime ?? currentTime) - note.startTime);
+    return {
+      id: note.id,
+      anchorMs: anchor,
+      staff,
+      stemDown,
+      y,
+      stemX,
+      headSpanMinX,
+      headSpanMaxX,
+      durationMs,
+    };
+  });
+
+  const { byId: beamById, beams } = layoutBeamAndStems(beamInputs, bpm, STEM_LENGTH);
+
+  type NoteRow = {
+    note: Note;
+    xDraw: number;
+    y: number;
+    staff: 'treble' | 'bass';
+    alpha: number;
+    stemX: number;
+    stemDown: boolean;
+    stemLen: number;
+    stemTipY: number;
+    flagCount: number;
+    isBeamed: boolean;
+    drawsStem: boolean;
+    drawsFlags: boolean;
+  };
+
+  const rows: NoteRow[] = visible.map((note) => {
     const anchor = anchorById.get(note.id) ?? note.startTime;
     const xBase = timeToX(anchor);
     const dx = dxMap.get(note.id) ?? 0;
     const xDraw = xBase + dx;
-
     const { y, staff } = pitchToGrandStaffY(note.pitch);
     const alpha = 0.82 + (note.velocity / 127) * 0.18;
+    const blSelf = beamById.get(note.id)!;
+    const chord = chordStemInfo.get(note.id);
+    const championBl = chord ? beamById.get(chord.championId)! : blSelf;
+    const stemDown = chord?.stemDown ?? stemDownForStaff(y, staff);
+    const stemX =
+      chord?.stemX ??
+      (stemDown ? xDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR : xDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR);
+    const drawsStem = !chord || chord.championId === note.id;
+    const drawsFlags = drawsStem && !championBl.isBeamed && championBl.flagCount > 0;
+    return {
+      note,
+      xDraw,
+      y,
+      staff,
+      alpha,
+      stemX,
+      stemDown,
+      stemLen: drawsStem ? championBl.stemLen : 0,
+      stemTipY: drawsStem ? championBl.stemTipY : 0,
+      flagCount: championBl.flagCount,
+      isBeamed: blSelf.isBeamed,
+      drawsStem,
+      drawsFlags,
+    };
+  });
 
-    drawLedgerLines(xDraw, y, staff);
+  for (const r of rows) {
+    drawLedgerLines(r.xDraw, r.y, r.staff);
+  }
 
-    const stemDown = stemDownForStaff(y, staff);
-    const stemX = stemDown ? xDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR : xDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR;
-    const stemY0 = y;
-    const stemY1 = stemDown ? y + STEM_LENGTH : y - STEM_LENGTH;
+  for (const b of beams) {
+    drawBeamStack(ctx, b, 0.9);
+  }
 
+  for (const r of rows) {
+    if (!r.drawsStem) continue;
+    const stemY1 = r.stemDown ? r.y + r.stemLen : r.y - r.stemLen;
     ctx.save();
-    ctx.strokeStyle = `rgba(26, 26, 30, ${alpha})`;
+    ctx.strokeStyle = `rgba(26, 26, 30, ${r.alpha})`;
     ctx.lineWidth = 1.35;
     ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(stemX, stemY0);
-    ctx.lineTo(stemX, stemY1);
+    ctx.moveTo(r.stemX, r.y);
+    ctx.lineTo(r.stemX, stemY1);
     ctx.stroke();
     ctx.restore();
+  }
 
-    const accidental = getAccidentalUnicode(note.pitch);
+  for (const r of rows) {
+    if (!r.drawsFlags) continue;
+    drawStackedFlags(ctx, r.stemX, r.stemTipY, r.stemDown, r.flagCount, r.alpha);
+  }
+
+  for (const r of rows) {
+    const accidental = getAccidentalUnicode(r.note.pitch);
     if (accidental) {
       const gapFromHead = LINE_SPACING * 0.42;
-      const accRightX = xDraw - NOTE_HEAD_RX - gapFromHead;
+      const accRightX = r.xDraw - NOTE_HEAD_RX - gapFromHead;
       ctx.save();
       ctx.fillStyle = '#050505';
       ctx.font =
         '600 16px "Segoe UI Symbol", "Apple Symbols", "Noto Music", "Arial Unicode MS", sans-serif';
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'right';
-      ctx.fillText(accidental, accRightX, y);
+      ctx.fillText(accidental, accRightX, r.y);
       ctx.restore();
     }
+  }
 
-    ctx.fillStyle = `rgba(12, 12, 14, ${alpha})`;
+  for (const r of rows) {
+    ctx.fillStyle = `rgba(12, 12, 14, ${r.alpha})`;
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.ellipse(xDraw, y, NOTE_HEAD_RX, NOTE_HEAD_RY, -0.3, 0, Math.PI * 2);
+    ctx.ellipse(r.xDraw, r.y, NOTE_HEAD_RX, NOTE_HEAD_RY, -0.3, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }
