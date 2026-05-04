@@ -1,131 +1,45 @@
-import React, { useEffect, useRef, useCallback, useState } from 'react';
+import React, { useLayoutEffect, useRef, useCallback, useState } from 'react';
 import { Staff } from '../components/Staff';
 import { ControlPanel } from '../components/ControlPanel';
 import { useMidi } from '../hooks/useMidi';
+import { useRealtimeNotes } from '../hooks/useRealtimeNotes';
 import { useAppStore } from '../store/useAppStore';
-import { Note } from '../types';
 
 export const Home: React.FC = () => {
-  const { isSupported, devices, selectedDevice } = useMidi();
+  const { isSupported, selectedDevice, subscribeToMidi } = useMidi();
 
-  const {
-    notes,
-    setNotes,
-    setDevices,
-    chordThreshold,
-    showGrid,
-    bpm,
-    scrollPosition,
-    setScrollPosition,
-    currentTime,
-    setCurrentTime,
-    pixelsPerSecond,
-    incrementNoteCount,
-  } = useAppStore();
+  const notes = useAppStore((s) => s.notes);
+  const chordThreshold = useAppStore((s) => s.chordThreshold);
+  const showGrid = useAppStore((s) => s.showGrid);
+  const bpm = useAppStore((s) => s.bpm);
+  const setScrollPosition = useAppStore((s) => s.setScrollPosition);
+  const setCurrentTime = useAppStore((s) => s.setCurrentTime);
+  const pixelsPerSecond = useAppStore((s) => s.pixelsPerSecond);
 
+  const sessionStartRef = useRef(0);
   const [isResetting, setIsResetting] = useState(false);
-  const allNotesRef = useRef<Note[]>([]);
-  const startTimeRef = useRef<number>(Date.now());
-  const animationFrameRef = useRef<number | null>(null);
-  const lastNoteTimeRef = useRef<number>(0);
 
-  useEffect(() => {
-    setDevices(devices);
-  }, [devices, setDevices]);
+  useLayoutEffect(() => {
+    if (sessionStartRef.current === 0) {
+      sessionStartRef.current = Date.now();
+    }
+  }, []);
 
-  useEffect(() => {
-    if (!selectedDevice) return;
-
-    const handleMidiMessage = (event: MIDIMessageEvent) => {
-      const data = event.data;
-      if (!data || data.length < 3) return;
-
-      const status = data[0];
-      const pitch = data[1];
-      const velocity = data[2];
-      const command = status & 0xf0;
-
-      const timestamp = Date.now() - startTimeRef.current;
-
-      if (command === 0x90 && velocity > 0) {
-        let chordStartTime = timestamp;
-        
-        const timeDiff = timestamp - lastNoteTimeRef.current;
-        if (timeDiff <= chordThreshold) {
-          const currentNotes = allNotesRef.current;
-          for (let i = currentNotes.length - 1; i >= 0; i--) {
-            const note = currentNotes[i];
-            const noteTimeDiff = timestamp - note.startTime;
-            if (noteTimeDiff <= chordThreshold) {
-              chordStartTime = note.startTime;
-              break;
-            }
-          }
-        }
-        
-        lastNoteTimeRef.current = timestamp;
-
-        const newNote: Note = {
-          id: `${timestamp}-${pitch}`,
-          pitch,
-          velocity,
-          startTime: chordStartTime,
-          isPlaying: true,
-        };
-
-        allNotesRef.current = [...allNotesRef.current, newNote];
-        setNotes([...allNotesRef.current]);
-        incrementNoteCount();
-      } else if (command === 0x80 || (command === 0x90 && velocity === 0)) {
-        allNotesRef.current = allNotesRef.current.map(n =>
-          n.pitch === pitch && n.isPlaying
-            ? { ...n, isPlaying: false, endTime: timestamp }
-            : n
-        );
-        setNotes([...allNotesRef.current]);
-      }
-    };
-
-    selectedDevice.input.onmidimessage = handleMidiMessage;
-
-    return () => {
-      if (selectedDevice.input) {
-        selectedDevice.input.onmidimessage = null;
-      }
-    };
-  }, [selectedDevice, incrementNoteCount, chordThreshold, setNotes]);
-
-  useEffect(() => {
-    const updateTime = () => {
-      const elapsed = Date.now() - startTimeRef.current;
-      setCurrentTime(elapsed);
-
-      const targetPosition = elapsed - 3000;
-      setScrollPosition(Math.max(0, targetPosition));
-
-      animationFrameRef.current = requestAnimationFrame(updateTime);
-    };
-
-    animationFrameRef.current = requestAnimationFrame(updateTime);
-
-    return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [setCurrentTime, setScrollPosition]);
+  const { clearRecording } = useRealtimeNotes({
+    subscribeToMidi,
+    enabled: !!selectedDevice,
+    sessionStartRef,
+  });
 
   const handleReset = useCallback(() => {
     setIsResetting(true);
     setTimeout(() => setIsResetting(false), 300);
 
-    startTimeRef.current = Date.now();
-    allNotesRef.current = [];
-    setNotes([]);
+    sessionStartRef.current = Date.now();
+    clearRecording();
     setScrollPosition(0);
     setCurrentTime(0);
-    lastNoteTimeRef.current = 0;
-  }, [setNotes, setScrollPosition, setCurrentTime]);
+  }, [clearRecording, setCurrentTime, setScrollPosition]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50 p-4 md:p-8">
@@ -180,8 +94,8 @@ export const Home: React.FC = () => {
                   width={1200}
                   height={500}
                   notes={notes}
-                  scrollPosition={scrollPosition}
-                  currentTime={currentTime}
+                  sessionStartRef={sessionStartRef}
+                  scrollLeadMs={3000}
                   pixelsPerSecond={pixelsPerSecond}
                   showGrid={showGrid}
                   bpm={bpm}

@@ -1,73 +1,87 @@
 import { useState, useEffect, useCallback } from 'react';
-import { MidiDevice, MidiMessage } from '../types';
+import type { MidiDevice, MidiMessage } from '../types';
+import { useAppStore } from '../store/useAppStore';
+
+function collectInputs(access: MIDIAccess): MidiDevice[] {
+  const list: MidiDevice[] = [];
+  access.inputs.forEach((input) => {
+    list.push({
+      id: input.id,
+      name: input.name || 'Unknown Device',
+      input,
+    });
+  });
+  return list;
+}
 
 export const useMidi = () => {
-  const [devices, setDevices] = useState<MidiDevice[]>([]);
-  const [selectedDevice, setSelectedDevice] = useState<MidiDevice | null>(null);
   const [midiAccess, setMidiAccess] = useState<MIDIAccess | null>(null);
-  const [isSupported, setIsSupported] = useState(true);
+  const [isSupported, setIsSupported] = useState(
+    () => typeof navigator !== 'undefined' && 'requestMIDIAccess' in navigator,
+  );
+
+  const devices = useAppStore((s) => s.devices);
+  const selectedDevice = useAppStore((s) => s.selectedDevice);
+  const setDevices = useAppStore((s) => s.setDevices);
+  const setSelectedDevice = useAppStore((s) => s.setSelectedDevice);
+
+  const applyInputList = useCallback(
+    (access: MIDIAccess, opts?: { initial?: boolean }) => {
+      const next = collectInputs(access);
+      setDevices(next);
+      const current = useAppStore.getState().selectedDevice;
+
+      if (current && next.some((d) => d.id === current.id)) {
+        return;
+      }
+      if (current && !next.some((d) => d.id === current.id)) {
+        setSelectedDevice(next[0] ?? null);
+        return;
+      }
+      if (!current && next.length > 0 && opts?.initial) {
+        setSelectedDevice(next[0]);
+      }
+    },
+    [setDevices, setSelectedDevice],
+  );
 
   const handleStateChange = useCallback(() => {
     if (!midiAccess) return;
-
-    const newDevices: MidiDevice[] = [];
-    midiAccess.inputs.forEach((input) => {
-      newDevices.push({
-        id: input.id,
-        name: input.name || 'Unknown Device',
-        input,
-      });
-    });
-
-    setDevices(newDevices);
-
-    if (selectedDevice && !newDevices.find(d => d.id === selectedDevice.id)) {
-      setSelectedDevice(null);
-    }
-  }, [midiAccess, selectedDevice]);
+    applyInputList(midiAccess);
+  }, [midiAccess, applyInputList]);
 
   const connectDevice = useCallback(async () => {
     try {
       const access = await navigator.requestMIDIAccess();
       setMidiAccess(access);
       access.onstatechange = handleStateChange;
-
-      const initialDevices: MidiDevice[] = [];
-      access.inputs.forEach((input) => {
-        initialDevices.push({
-          id: input.id,
-          name: input.name || 'Unknown Device',
-          input,
-        });
-      });
-
-      setDevices(initialDevices);
-
-      if (initialDevices.length > 0) {
-        setSelectedDevice(initialDevices[0]);
-      }
+      applyInputList(access, { initial: true });
     } catch (error) {
       console.error('Web MIDI API is not supported or access denied:', error);
       setIsSupported(false);
     }
-  }, [handleStateChange]);
+  }, [applyInputList, handleStateChange]);
 
   useEffect(() => {
-    if ('requestMIDIAccess' in navigator) {
-      connectDevice();
-    } else {
-      setIsSupported(false);
+    if (!('requestMIDIAccess' in navigator)) {
+      return;
     }
+    queueMicrotask(() => {
+      void connectDevice();
+    });
   }, [connectDevice]);
 
   const subscribeToMidi = useCallback(
-    (onMessage: (message: MidiMessage) => void) => {
+    (
+      onMessage: (message: MidiMessage) => void,
+      getElapsedMs: () => number,
+    ): (() => void) => {
       if (!selectedDevice) return () => {};
 
       const handleMidiMessage = (event: MIDIMessageEvent) => {
         const data = event.data;
         if (!data || data.length < 3) return;
-        
+
         const status = data[0];
         const pitch = data[1];
         const velocity = data[2];
@@ -86,24 +100,26 @@ export const useMidi = () => {
           type,
           pitch,
           velocity,
-          timestamp: event.timeStamp,
+          timestamp: getElapsedMs(),
         });
       };
 
-      selectedDevice.input.onmidimessage = handleMidiMessage;
+      const midiInput = selectedDevice.input;
+      // Web MIDI：规范使用可写的 onmidimessage 属性挂载回调
+      // eslint-disable-next-line react-hooks/immutability -- MIDIInput 仅支持该赋值式 API
+      midiInput.onmidimessage = handleMidiMessage;
 
       return () => {
-        selectedDevice.input.onmidimessage = null;
+        midiInput.onmidimessage = null;
       };
     },
-    [selectedDevice]
+    [selectedDevice],
   );
 
   return {
     isSupported,
     devices,
     selectedDevice,
-    setSelectedDevice,
     subscribeToMidi,
   };
 };

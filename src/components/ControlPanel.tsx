@@ -5,7 +5,7 @@ interface ControlPanelProps {
   isMidiSupported: boolean;
 }
 
-export const ControlPanel: React.FC<ControlPanelProps> = ({ isMidiSupported }) => {
+export const ControlPanel = React.memo(function ControlPanel({ isMidiSupported }: ControlPanelProps) {
   const {
     selectedDevice,
     devices,
@@ -167,6 +167,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({ isMidiSupported }) =
       </div>
     </div>
   );
-};
+});
 
 export default ControlPanel;
