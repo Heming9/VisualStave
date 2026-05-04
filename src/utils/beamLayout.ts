@@ -56,8 +56,13 @@ export function layoutBeamAndStems(
   const byId = new Map<string, BeamLayoutResult>();
   const beams: BeamStroke[] = [];
 
+  const flagById = new Map<string, number>();
   for (const n of notes) {
-    const fc = classifyFlagCount(n.durationMs, bpm);
+    flagById.set(n.id, classifyFlagCount(n.durationMs, bpm));
+  }
+
+  for (const n of notes) {
+    const fc = flagById.get(n.id)!;
     const stemLen = defaultStemLenPx(stemLengthConst);
     const stemTipY = n.stemDown ? n.y + stemLen : n.y - stemLen;
     byId.set(n.id, {
@@ -72,7 +77,7 @@ export function layoutBeamAndStems(
     });
   }
 
-  const short = notes.filter((n) => classifyFlagCount(n.durationMs, bpm) >= 1);
+  const short = notes.filter((n) => flagById.get(n.id)! >= 1);
   if (short.length < 2) return { byId, beams };
 
   for (const staff of ['treble', 'bass'] as const) {
@@ -95,10 +100,7 @@ export function layoutBeamAndStems(
       }
 
       if (group.length >= 2) {
-        const maxFlags = Math.min(
-          3,
-          Math.max(1, ...group.map((g) => classifyFlagCount(g.durationMs, bpm))),
-        );
+        const maxFlags = Math.min(3, Math.max(1, ...group.map((g) => flagById.get(g.id)!)));
         const stemLens = group.map(() => defaultStemLenPx(stemLengthConst));
         const defaultTips = group.map((g, idx) => (stemDown ? g.y + stemLens[idx]! : g.y - stemLens[idx]!));
         const beamPad = stemLengthConst * 0.06;
@@ -118,7 +120,7 @@ export function layoutBeamAndStems(
           const stemLen = stemDown ? beamOuterY - g.y : g.y - beamOuterY;
           const stemTipY = stemDown ? g.y + stemLen : g.y - stemLen;
           byId.set(g.id, {
-            flagCount: classifyFlagCount(g.durationMs, bpm),
+            flagCount: flagById.get(g.id)!,
             stemLen: Math.max(stemLengthConst * 0.35, stemLen),
             stemTipY,
             isBeamed: true,

@@ -49,16 +49,26 @@ function stemDownForStaff(y: number, staff: 'treble' | 'bass'): boolean {
 
 const BEAM_LINE_H = 2.9;
 const BEAM_PARALLEL_GAP = 3.5;
+/** 和弦等 stemX 重合时避免符杠过细 */
+const BEAM_MIN_WIDTH = LINE_SPACING * 0.44;
+const BEAM_CORNER_R = 1.15;
 
 function drawBeamStack(ctx: CanvasRenderingContext2D, beam: BeamStroke, alpha: number): void {
   const { beamMinX, beamMaxX, beamOuterY, parallelLines, stemDown } = beam;
-  const w = beamMaxX - beamMinX + 2.5;
-  const x0 = beamMinX - 1.25;
+  let w = beamMaxX - beamMinX + 2.5;
+  let x0 = beamMinX - 1.25;
+  if (w < BEAM_MIN_WIDTH) {
+    w = BEAM_MIN_WIDTH;
+    x0 = (beamMinX + beamMaxX) / 2 - w / 2;
+  }
   const a = Math.min(1, alpha * 0.98);
   ctx.fillStyle = `rgba(22, 22, 28, ${a})`;
   for (let k = 0; k < parallelLines; k++) {
     const yy = stemDown ? beamOuterY - k * BEAM_PARALLEL_GAP : beamOuterY + k * BEAM_PARALLEL_GAP;
-    ctx.fillRect(x0, yy - BEAM_LINE_H / 2, w, BEAM_LINE_H);
+    const yTop = yy - BEAM_LINE_H / 2;
+    ctx.beginPath();
+    ctx.roundRect(x0, yTop, w, BEAM_LINE_H, BEAM_CORNER_R);
+    ctx.fill();
   }
 }
 
