@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { MidiDevice, MidiMessage } from '../types';
 import { useAppStore } from '../store/useAppStore';
 
@@ -15,7 +15,7 @@ function collectInputs(access: MIDIAccess): MidiDevice[] {
 }
 
 export const useMidi = () => {
-  const [midiAccess, setMidiAccess] = useState<MIDIAccess | null>(null);
+  const midiAccessRef = useRef<MIDIAccess | null>(null);
   const [isSupported, setIsSupported] = useState(
     () => typeof navigator !== 'undefined' && 'requestMIDIAccess' in navigator,
   );
@@ -45,22 +45,20 @@ export const useMidi = () => {
     [setDevices, setSelectedDevice],
   );
 
-  const handleStateChange = useCallback(() => {
-    if (!midiAccess) return;
-    applyInputList(midiAccess);
-  }, [midiAccess, applyInputList]);
-
   const connectDevice = useCallback(async () => {
     try {
       const access = await navigator.requestMIDIAccess();
-      setMidiAccess(access);
-      access.onstatechange = handleStateChange;
+      midiAccessRef.current = access;
+      access.onstatechange = () => {
+        const a = midiAccessRef.current;
+        if (a) applyInputList(a);
+      };
       applyInputList(access, { initial: true });
     } catch (error) {
       console.error('Web MIDI API is not supported or access denied:', error);
       setIsSupported(false);
     }
-  }, [applyInputList, handleStateChange]);
+  }, [applyInputList]);
 
   useEffect(() => {
     if (!('requestMIDIAccess' in navigator)) {
@@ -70,6 +68,16 @@ export const useMidi = () => {
       void connectDevice();
     });
   }, [connectDevice]);
+
+  useEffect(() => {
+    return () => {
+      const a = midiAccessRef.current;
+      if (a) {
+        a.onstatechange = null;
+      }
+      midiAccessRef.current = null;
+    };
+  }, []);
 
   const subscribeToMidi = useCallback(
     (
@@ -105,7 +113,6 @@ export const useMidi = () => {
       };
 
       const midiInput = selectedDevice.input;
-      // Web MIDI：规范使用可写的 onmidimessage 属性挂载回调
       // eslint-disable-next-line react-hooks/immutability -- MIDIInput 仅支持该赋值式 API
       midiInput.onmidimessage = handleMidiMessage;
 

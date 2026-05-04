@@ -181,23 +181,17 @@ export const DiagnosticPage: React.FC = () => {
       const x = leftMargin + (note.startTime / 1000) * pixelsPerSecond;
       const { y } = pitchToGrandStaffY(note.pitch, DIAG_STAFF);
 
-      const alpha = 0.3 + (note.velocity / 127) * 0.7;
-      ctx.fillStyle = `rgba(79, 70, 229, ${alpha})`;
+      const alpha = 0.82 + (note.velocity / 127) * 0.18;
+      ctx.fillStyle = `rgba(12, 12, 14, ${alpha})`;
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 2;
 
       ctx.beginPath();
       ctx.ellipse(x, y, 12, 8, -0.3, 0, Math.PI * 2);
       ctx.fill();
+      ctx.stroke();
 
-      if (note.endTime) {
-        const endX = leftMargin + (note.endTime / 1000) * pixelsPerSecond;
-        const duration = endX - x;
-        if (duration > 0) {
-          ctx.fillStyle = `rgba(79, 70, 229, ${alpha * 0.3})`;
-          ctx.fillRect(x, y - 4, duration, 8);
-        }
-      }
-
-      ctx.fillStyle = '#4f46e5';
+      ctx.fillStyle = '#525252';
       ctx.font = '10px Arial';
       ctx.fillText(`${note.pitch}`, x + 15, y + 4);
     });

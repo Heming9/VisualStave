@@ -4,11 +4,13 @@ import { ControlPanel } from '../components/ControlPanel';
 import { useMidi } from '../hooks/useMidi';
 import { useRealtimeNotes } from '../hooks/useRealtimeNotes';
 import { useAppStore } from '../store/useAppStore';
+import type { Note } from '../types';
+
+const SCROLL_LEAD_MS = 3000;
 
 export const Home: React.FC = () => {
   const { isSupported, selectedDevice, subscribeToMidi } = useMidi();
 
-  const notes = useAppStore((s) => s.notes);
   const chordThreshold = useAppStore((s) => s.chordThreshold);
   const showGrid = useAppStore((s) => s.showGrid);
   const bpm = useAppStore((s) => s.bpm);
@@ -17,7 +19,13 @@ export const Home: React.FC = () => {
   const pixelsPerSecond = useAppStore((s) => s.pixelsPerSecond);
 
   const sessionStartRef = useRef(0);
+  const canvasNotesRef = useRef<Note[]>([]);
+  const [liveNoteCount, setLiveNoteCount] = useState(0);
   const [isResetting, setIsResetting] = useState(false);
+
+  const handleLiveMetrics = useCallback((m: { noteCount: number }) => {
+    setLiveNoteCount(m.noteCount);
+  }, []);
 
   useLayoutEffect(() => {
     if (sessionStartRef.current === 0) {
@@ -29,6 +37,9 @@ export const Home: React.FC = () => {
     subscribeToMidi,
     enabled: !!selectedDevice,
     sessionStartRef,
+    canvasNotesRef,
+    onLiveMetrics: handleLiveMetrics,
+    scrollLeadMs: SCROLL_LEAD_MS,
   });
 
   const handleReset = useCallback(() => {
@@ -67,7 +78,7 @@ export const Home: React.FC = () => {
                     五线谱
                   </h2>
                   <p className="text-gray-500 text-sm mt-1">跟随你的演奏，实时可视化音符</p>
-                  <p className="text-xs text-indigo-600 mt-1">当前音符: {notes.length} · 和弦阈值: {chordThreshold}ms</p>
+                  <p className="text-xs text-indigo-600 mt-1">当前音符: {liveNoteCount} · 和弦阈值: {chordThreshold}ms</p>
                 </div>
                 <button
                   onClick={handleReset}
@@ -93,9 +104,9 @@ export const Home: React.FC = () => {
                 <Staff
                   width={1200}
                   height={500}
-                  notes={notes}
+                  canvasNotesRef={canvasNotesRef}
                   sessionStartRef={sessionStartRef}
-                  scrollLeadMs={3000}
+                  scrollLeadMs={SCROLL_LEAD_MS}
                   pixelsPerSecond={pixelsPerSecond}
                   showGrid={showGrid}
                   bpm={bpm}

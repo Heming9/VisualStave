@@ -27,6 +27,8 @@ interface AppState {
   setCurrentTime: (time: number) => void;
   incrementNoteCount: () => void;
   incrementChordCount: () => void;
+  /** 合并多次统计更新，减轻连续弹奏时的 store / React 压力 */
+  addNoteStatsDelta: (d: { notes?: number; chords?: number }) => void;
   resetStats: () => void;
 }
 
@@ -66,6 +68,13 @@ export const useAppStore = create<AppState>((set) => ({
       totalChordsPlayed: state.stats.totalChordsPlayed + 1,
     },
   })),
+  addNoteStatsDelta: (d) =>
+    set((state) => ({
+      stats: {
+        totalNotesPlayed: state.stats.totalNotesPlayed + (d.notes ?? 0),
+        totalChordsPlayed: state.stats.totalChordsPlayed + (d.chords ?? 0),
+      },
+    })),
   resetStats: () => set({
     stats: {
       totalNotesPlayed: 0,

@@ -9,10 +9,9 @@ import {
 interface StaffProps {
   width?: number;
   height?: number;
-  notes?: Note[];
-  /** 会话起点（与 MIDI 时间轴一致），由父组件维护；不在 React state 里每帧更新 */
+  /** 画布每帧读取，不经 React；与 useRealtimeNotes 写入同一引用 */
+  canvasNotesRef: MutableRefObject<Note[]>;
   sessionStartRef: MutableRefObject<number>;
-  /** 滚动让播放头落后内容的时间（毫秒），默认 3000 */
   scrollLeadMs?: number;
   pixelsPerSecond?: number;
   showGrid?: boolean;
@@ -28,7 +27,6 @@ type FrameParams = {
   pixelsPerSecond: number;
   showGrid: boolean;
   bpm: number;
-  notes: Note[];
 };
 
 function drawStaffFrame(
@@ -36,8 +34,9 @@ function drawStaffFrame(
   p: FrameParams,
   scrollPosition: number,
   currentTime: number,
+  notes: readonly Note[],
 ): void {
-  const { width, height, pixelsPerSecond, showGrid, bpm, notes } = p;
+  const { width, height, pixelsPerSecond, showGrid, bpm } = p;
 
   const timeToX = (timeMs: number) =>
     LEFT_MARGIN +
@@ -144,39 +143,29 @@ function drawStaffFrame(
     }
   };
 
-  for (let i = 0; i < notes.length; i++) {
+  let startIndex = 0;
+  while (startIndex < notes.length) {
+    const n = notes[startIndex];
+    const tail = n.endTime ?? currentTime;
+    if (tail >= visibleStartTime) break;
+    startIndex++;
+  }
+
+  for (let i = startIndex; i < notes.length; i++) {
     const note = notes[i];
     const tailTime = note.endTime ?? currentTime;
     if (tailTime < visibleStartTime || note.startTime > visibleEndTime) continue;
 
     const xStart = timeToX(note.startTime);
-    const xEnd = timeToX(tailTime);
-    if (xEnd < LEFT_MARGIN - 50 || xStart > width + 50) continue;
+    if (xStart < LEFT_MARGIN - 50 || xStart > width + 50) continue;
 
     const { y, staff } = pitchToGrandStaffY(note.pitch);
-    const alpha = 0.3 + (note.velocity / 127) * 0.7;
-    const barWidth = Math.max(0, xEnd - xStart);
-
-    if (barWidth > 1) {
-      ctx.fillStyle = `rgba(79, 70, 229, ${alpha * 0.35})`;
-      const bh = 10;
-      const r = 4;
-      const bx = xStart;
-      const by = y - bh / 2;
-      ctx.beginPath();
-      if (typeof ctx.roundRect === 'function') {
-        ctx.roundRect(bx, by, barWidth, bh, r);
-      } else {
-        ctx.rect(bx, by, barWidth, bh);
-      }
-      ctx.fill();
-    }
+    const alpha = 0.82 + (note.velocity / 127) * 0.18;
 
     drawLedgerLines(xStart, y, staff);
 
-    const NOTE_COLOR = `rgba(79, 70, 229, ${alpha})`;
-    ctx.fillStyle = NOTE_COLOR;
-    ctx.strokeStyle = NOTE_COLOR;
+    ctx.fillStyle = `rgba(12, 12, 14, ${alpha})`;
+    ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.ellipse(xStart, y, 11, 8, -0.3, 0, Math.PI * 2);
@@ -184,7 +173,7 @@ function drawStaffFrame(
     ctx.stroke();
 
     if (isBlackKey(note.pitch)) {
-      ctx.fillStyle = '#1a202c';
+      ctx.fillStyle = '#d4d4d4';
       ctx.font = 'bold 10px Arial';
       ctx.fillText('#', xStart - 3, y - 2);
     }
@@ -212,7 +201,7 @@ function drawStaffFrame(
 export const Staff = React.memo(function Staff({
   width = 1200,
   height = 500,
-  notes = [],
+  canvasNotesRef,
   sessionStartRef,
   scrollLeadMs = 3000,
   pixelsPerSecond = 100,
@@ -226,7 +215,6 @@ export const Staff = React.memo(function Staff({
     pixelsPerSecond,
     showGrid,
     bpm,
-    notes,
   });
 
   frameParamsRef.current = {
@@ -235,27 +223,57 @@ export const Staff = React.memo(function Staff({
     pixelsPerSecond,
     showGrid,
     bpm,
-    notes,
   };
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
     let rafId = 0;
 
-    const tick = () => {
+    const step = () => {
       const elapsed = Date.now() - sessionStartRef.current;
       const scrollPosition = Math.max(0, elapsed - scrollLeadMs);
-      drawStaffFrame(ctx, frameParamsRef.current, scrollPosition, elapsed);
-      rafId = requestAnimationFrame(tick);
+      drawStaffFrame(ctx, frameParamsRef.current, scrollPosition, elapsed, canvasNotesRef.current);
     };
 
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
-  }, [sessionStartRef, scrollLeadMs]);
+    const loop = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        rafId = 0;
+        return;
+      }
+      step();
+      rafId = requestAnimationFrame(loop);
+    };
+
+    const kick = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (rafId !== 0) return;
+      rafId = requestAnimationFrame(loop);
+    };
+
+    const onVisibility = () => {
+      if (typeof document === 'undefined') return;
+      if (document.visibilityState === 'hidden') {
+        if (rafId !== 0) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+      } else {
+        kick();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibility);
+    kick();
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (rafId !== 0) cancelAnimationFrame(rafId);
+    };
+  }, [canvasNotesRef, sessionStartRef, scrollLeadMs]);
 
   return (
     <canvas
