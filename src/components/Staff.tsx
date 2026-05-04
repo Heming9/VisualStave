@@ -32,6 +32,20 @@ const { lineSpacing: LINE_SPACING, trebleBottomY: TREBLE_BOTTOM_Y, bassTopY: BAS
 const NOTE_HEAD_RY = LINE_SPACING * 0.42;
 const NOTE_HEAD_RX = LINE_SPACING * 0.48;
 
+/** 符干长度（约 3.5 间） */
+const STEM_LENGTH = LINE_SPACING * 3.5;
+/** 与倾斜椭圆符头视觉相接的水平偏移 */
+const STEM_HEAD_X_FACTOR = 0.62;
+
+function stemDownForStaff(y: number, staff: 'treble' | 'bass'): boolean {
+  if (staff === 'treble') {
+    const midY = TREBLE_BOTTOM_Y - 2 * LINE_SPACING;
+    return y <= midY;
+  }
+  const midY = BASS_TOP_Y + 2 * LINE_SPACING;
+  return y >= midY;
+}
+
 type FrameParams = {
   width: number;
   height: number;
@@ -178,6 +192,21 @@ function drawStaffFrame(
     const alpha = 0.82 + (note.velocity / 127) * 0.18;
 
     drawLedgerLines(xDraw, y, staff);
+
+    const stemDown = stemDownForStaff(y, staff);
+    const stemX = stemDown ? xDraw - NOTE_HEAD_RX * STEM_HEAD_X_FACTOR : xDraw + NOTE_HEAD_RX * STEM_HEAD_X_FACTOR;
+    const stemY0 = y;
+    const stemY1 = stemDown ? y + STEM_LENGTH : y - STEM_LENGTH;
+
+    ctx.save();
+    ctx.strokeStyle = `rgba(26, 26, 30, ${alpha})`;
+    ctx.lineWidth = 1.35;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(stemX, stemY0);
+    ctx.lineTo(stemX, stemY1);
+    ctx.stroke();
+    ctx.restore();
 
     const accidental = getAccidentalUnicode(note.pitch);
     if (accidental) {
