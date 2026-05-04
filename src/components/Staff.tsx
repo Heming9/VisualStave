@@ -49,26 +49,64 @@ function stemDownForStaff(y: number, staff: 'treble' | 'bass'): boolean {
 
 const BEAM_LINE_H = 2.9;
 const BEAM_PARALLEL_GAP = 3.5;
-/** 和弦等 stemX 重合时避免符杠过细 */
+/** 和弦等 stemX 重合时避免符杠过细（水平投影长度） */
 const BEAM_MIN_WIDTH = LINE_SPACING * 0.44;
-const BEAM_CORNER_R = 1.15;
+function fillSlantedBeamStrip(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  halfW: number,
+): void {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = (-dy / len) * halfW;
+  const py = (dx / len) * halfW;
+  ctx.beginPath();
+  ctx.moveTo(x0 + px, y0 + py);
+  ctx.lineTo(x1 + px, y1 + py);
+  ctx.lineTo(x1 - px, y1 - py);
+  ctx.lineTo(x0 - px, y0 - py);
+  ctx.closePath();
+  ctx.fill();
+}
 
 function drawBeamStack(ctx: CanvasRenderingContext2D, beam: BeamStroke, alpha: number): void {
-  const { beamMinX, beamMaxX, beamOuterY, parallelLines, stemDown } = beam;
-  let w = beamMaxX - beamMinX + 2.5;
-  let x0 = beamMinX - 1.25;
-  if (w < BEAM_MIN_WIDTH) {
-    w = BEAM_MIN_WIDTH;
-    x0 = (beamMinX + beamMaxX) / 2 - w / 2;
+  const origX0 = beam.x0;
+  const origX1 = beam.x1;
+  let x0 = beam.x0;
+  let y0 = beam.y0;
+  let x1 = beam.x1;
+  let y1 = beam.y1;
+  if (Math.abs(x1 - x0) < BEAM_MIN_WIDTH) {
+    const cx = (x0 + x1) / 2;
+    const half = BEAM_MIN_WIDTH / 2;
+    const dx0 = origX1 - origX0;
+    const m = Math.abs(dx0) > 1e-6 ? (beam.y1 - beam.y0) / dx0 : 0;
+    x0 = cx - half;
+    x1 = cx + half;
+    y0 = beam.y0 + m * (x0 - origX0);
+    y1 = beam.y0 + m * (x1 - origX0);
   }
+
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const signedDist = (-dy * (beam.headMeanX - x0) + dx * (beam.headMeanY - y0)) / len;
+  let innerSign = -Math.sign(signedDist) || -1;
+  if (!beam.stemDown) innerSign *= -1;
+
+  const halfW = BEAM_LINE_H / 2;
   const a = Math.min(1, alpha * 0.98);
   ctx.fillStyle = `rgba(22, 22, 28, ${a})`;
-  for (let k = 0; k < parallelLines; k++) {
-    const yy = stemDown ? beamOuterY - k * BEAM_PARALLEL_GAP : beamOuterY + k * BEAM_PARALLEL_GAP;
-    const yTop = yy - BEAM_LINE_H / 2;
-    ctx.beginPath();
-    ctx.roundRect(x0, yTop, w, BEAM_LINE_H, BEAM_CORNER_R);
-    ctx.fill();
+  for (let k = beam.parallelLines - 1; k >= 0; k--) {
+    const ox = innerSign * nx * BEAM_PARALLEL_GAP * k;
+    const oy = innerSign * ny * BEAM_PARALLEL_GAP * k;
+    fillSlantedBeamStrip(ctx, x0 + ox, y0 + oy, x1 + ox, y1 + oy, halfW);
   }
 }
 
@@ -383,22 +421,28 @@ function drawStaffFrame(
     drawLedgerLines(r.xDraw, r.y, r.staff);
   }
 
-  for (const b of beams) {
-    drawBeamStack(ctx, b, 0.9);
-  }
+  /** 符梁盖住符干端点；圆帽会伸出梁外形成突起，故符杠音符用平头并略缩进梁内 */
+  const STEM_BEAM_TRIM = 0.65;
 
   for (const r of rows) {
     if (!r.drawsStem) continue;
-    const stemY1 = r.stemDown ? r.y + r.stemLen : r.y - r.stemLen;
+    let stemY1 = r.stemDown ? r.y + r.stemLen : r.y - r.stemLen;
+    if (r.isBeamed) {
+      stemY1 = r.stemDown ? stemY1 - STEM_BEAM_TRIM : stemY1 + STEM_BEAM_TRIM;
+    }
     ctx.save();
     ctx.strokeStyle = `rgba(26, 26, 30, ${r.alpha})`;
     ctx.lineWidth = 1.35;
-    ctx.lineCap = 'round';
+    ctx.lineCap = r.isBeamed ? 'butt' : 'round';
     ctx.beginPath();
     ctx.moveTo(r.stemX, r.y);
     ctx.lineTo(r.stemX, stemY1);
     ctx.stroke();
     ctx.restore();
+  }
+
+  for (const b of beams) {
+    drawBeamStack(ctx, b, 0.9);
   }
 
   for (const r of rows) {
